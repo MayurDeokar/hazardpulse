@@ -69,7 +69,7 @@ function MapViewport({ currentLocation, destination }) {
 }
 
 function App() {
-  const [view, setView] = useState("authority");
+  const [view, setView] = useState("role-select");
   const [hazards, setHazards] = useState([]);
   const [weather, setWeather] = useState(null);
   const [weatherError, setWeatherError] = useState("");
@@ -332,7 +332,35 @@ function App() {
   const setRole = (role) => {
     setSessionRole(role);
     localStorage.setItem("hazardpulse-role", role);
-    showToast(`Demo role switched to ${role}.`);
+    if (role === "Authority") {
+      setView("authority");
+      setDashboardTab("overview");
+    } else if (role === "Citizen") {
+      setView("citizen");
+      setDashboardTab("home");
+    } else {
+      setView("operations");
+      setDashboardTab("tasks");
+    }
+  };
+
+  const [dashboardTab, setDashboardTab] = useState("overview");
+
+  const openRolePicker = () => {
+    setView("role-select");
+    setDashboardTab("overview");
+  };
+
+  const jumpTo = (sectionId) => {
+    window.requestAnimationFrame(() => {
+      document.getElementById(sectionId)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  };
+
+  const navigateDashboard = (target, sectionId, tab) => {
+    setDashboardTab(tab || "overview");
+    if (target) setView(target);
+    if (sectionId) window.setTimeout(() => jumpTo(sectionId), 40);
   };
 
   const captureLocation = () => {
@@ -589,53 +617,121 @@ function App() {
     ["RESOLVED", resolvedCount, "Completed incidents"],
   ];
 
+  if (view === "role-select") {
+    return (
+      <div className="role-gate">
+        <div className="role-gate-noise"></div>
+        <header className="gate-header">
+          <button className="gate-brand" onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}>
+            <span className="brand-mark">H</span>
+            <span><b>HazardPulse</b><small>PUBLIC SAFETY INTELLIGENCE</small></span>
+          </button>
+          <span className="gate-version">PROTOTYPE · v2.1</span>
+        </header>
+
+        <main className="role-gate-main">
+          <div className="gate-copy">
+            <span className="gate-kicker">ONE PLATFORM · THREE EXPERIENCES</span>
+            <h1>How will you use<br /><em>HazardPulse?</em></h1>
+            <p>Choose your role to enter a focused workspace. Each experience shows only the information and actions that matter to you.</p>
+          </div>
+
+          <div className="role-cards">
+            <button className="role-card" onClick={() => setRole("Authority")}>
+              <div className="role-card-top"><span className="role-index">01</span><span className="role-arrow">↗</span></div>
+              <div className="role-symbol">⌘</div>
+              <h2>Authority</h2>
+              <p>See the city as a live safety control room. Prioritize risk, inspect incidents and understand what needs attention now.</p>
+              <div className="role-features"><span>Live GIS</span><span>Risk intelligence</span><span>Analytics</span></div>
+              <div className="role-cta">Enter Authority Dashboard <span>→</span></div>
+            </button>
+
+            <button className="role-card" onClick={() => setRole("Citizen")}>
+              <div className="role-card-top"><span className="role-index">02</span><span className="role-arrow">↗</span></div>
+              <div className="role-symbol">◎</div>
+              <h2>Citizen</h2>
+              <p>Report a hazard, check warnings around you and find a safer way to reach your destination.</p>
+              <div className="role-features"><span>Report</span><span>Nearby alerts</span><span>Safer route</span></div>
+              <div className="role-cta">Enter Citizen Portal <span>→</span></div>
+            </button>
+
+            <button className="role-card" onClick={() => setRole("Field Officer")}>
+              <div className="role-card-top"><span className="role-index">03</span><span className="role-arrow">↗</span></div>
+              <div className="role-symbol">+</div>
+              <h2>Field Officer</h2>
+              <p>Work the response queue, accept assignments, upload field evidence and close hazards with accountability.</p>
+              <div className="role-features"><span>Dispatch</span><span>Field proof</span><span>Resolution</span></div>
+              <div className="role-cta">Enter Operations <span>→</span></div>
+            </button>
+          </div>
+
+          <div className="gate-footer"><span>Detect. Verify. Assess. Warn.</span><span>Real-time intelligence for temporary public safety hazards.</span></div>
+        </main>
+      </div>
+    );
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
         <div className="sidebar-brand">
-          <div className="brand-icon">⚡</div>
+          <div className="brand-icon">H</div>
           <div><div className="brand-name">HazardPulse</div><div className="brand-subtitle">SAFETY INTELLIGENCE</div></div>
         </div>
 
-        <div className="demo-role-card">
-          <span>DEMO ACCESS</span>
-          <select value={sessionRole} onChange={(e) => setRole(e.target.value)}>
-            <option>Authority</option><option>Citizen</option><option>Field Officer</option>
-          </select>
+        <div className="active-role-card">
+          <span className="role-avatar">{sessionRole === "Authority" ? "⌘" : sessionRole === "Citizen" ? "◎" : "+"}</span>
+          <div><small>YOU ARE</small><b>{sessionRole}</b></div>
+          <button onClick={openRolePicker} title="Switch role">↗</button>
         </div>
 
         <nav className="sidebar-nav">
-          <button className={`nav-item ${view === "authority" ? "active" : ""}`} onClick={() => setView("authority")}>▦ <span>Authority Dashboard</span></button>
-          <button className={`nav-item ${view === "citizen" ? "active" : ""}`} onClick={() => setView("citizen")}>♟ <span>Citizen Portal</span></button>
-          <button className={`nav-item ${view === "operations" ? "active" : ""}`} onClick={() => setView("operations")}>⚙ <span>Municipal Operations</span></button>
-          <button className={`nav-item ${view === "analytics" ? "active" : ""}`} onClick={() => setView("analytics")}>▥ <span>Analytics</span></button>
-          <button className={`nav-item ${view === "alerts" ? "active" : ""}`} onClick={() => setView("alerts")}>⚠ <span>Safety Alerts <b className="nav-count">{alerts.length}</b></span></button>
+          {sessionRole === "Authority" && <>
+            <button className={`nav-item ${dashboardTab === "overview" ? "active" : ""}`} onClick={() => navigateDashboard("authority", "authority-overview", "overview")}><span className="nav-glyph">⌂</span><span>Overview</span></button>
+            <button className={`nav-item ${dashboardTab === "map" ? "active" : ""}`} onClick={() => navigateDashboard("authority", "authority-map", "map")}><span className="nav-glyph">⌖</span><span>Live Map</span></button>
+            <button className={`nav-item ${dashboardTab === "priority" ? "active" : ""}`} onClick={() => navigateDashboard("authority", "authority-priority", "priority")}><span className="nav-glyph">↗</span><span>Priority Queue</span><b className="nav-count">{activeHazards.length}</b></button>
+            <button className={`nav-item ${view === "analytics" ? "active" : ""}`} onClick={() => navigateDashboard("analytics", null, "analytics")}><span className="nav-glyph">◫</span><span>Analytics</span></button>
+            <button className={`nav-item ${view === "alerts" ? "active" : ""}`} onClick={() => navigateDashboard("alerts", null, "alerts")}><span className="nav-glyph">!</span><span>Safety Alerts</span><b className="nav-count">{alerts.length}</b></button>
+          </>}
+          {sessionRole === "Citizen" && <>
+            <button className={`nav-item ${dashboardTab === "home" ? "active" : ""}`} onClick={() => navigateDashboard("citizen", "citizen-top", "home")}><span className="nav-glyph">⌂</span><span>Safety Home</span></button>
+            <button className={`nav-item ${dashboardTab === "report" ? "active" : ""}`} onClick={() => navigateDashboard("citizen", "citizen-report", "report")}><span className="nav-glyph">+</span><span>Report Hazard</span></button>
+            <button className={`nav-item ${dashboardTab === "map" ? "active" : ""}`} onClick={() => navigateDashboard("citizen", "citizen-map-panel", "map")}><span className="nav-glyph">⌖</span><span>Nearby Safety</span></button>
+            <button className={`nav-item ${dashboardTab === "route" ? "active" : ""}`} onClick={() => navigateDashboard("citizen", "safer-route-panel", "route")}><span className="nav-glyph">↝</span><span>Safer Route</span></button>
+          </>}
+          {sessionRole === "Field Officer" && <>
+            <button className={`nav-item ${dashboardTab === "tasks" ? "active" : ""}`} onClick={() => navigateDashboard("operations", "operations-top", "tasks")}><span className="nav-glyph">⌂</span><span>My Tasks</span></button>
+            <button className={`nav-item ${dashboardTab === "queue" ? "active" : ""}`} onClick={() => navigateDashboard("operations", "operations-queue", "queue")}><span className="nav-glyph">↗</span><span>Response Queue</span><b className="nav-count">{activeHazards.length}</b></button>
+            <button className={`nav-item ${dashboardTab === "proof" ? "active" : ""}`} onClick={() => navigateDashboard("operations", "operations-queue", "proof")}><span className="nav-glyph">✓</span><span>Proof & Resolve</span></button>
+          </>}
         </nav>
 
         <div className="sidebar-footer">
-          <div className="system-status"><span className="status-dot"></span>System Operational</div>
-          <div className="footer-text">HazardPulse Platform · Prototype</div>
+          <div className="system-status"><span className="status-dot"></span>All systems operational</div>
+          <div className="footer-text">HazardPulse · Prototype v2.4</div>
         </div>
       </aside>
 
       <main className="main-content">
+        <div className="mobile-dashboard-head"><button onClick={openRolePicker}>← Roles</button><span>{sessionRole}</span></div>
         <div className="global-demo-bar">
-          <div><b>DEMO MODE</b><span>{demoWeather ? "Heavy rain simulation active" : "Live environmental context"}</span></div>
+          <div className="context-line"><span className="context-pulse"></span><b>{sessionRole}</b><span>Focused workspace</span></div>
           <div className="demo-actions">
-            <button className={`mini-button ${demoWeather ? "danger" : ""}`} onClick={toggleDemoWeather}>{demoWeather ? "☀ Restore Weather" : "🌧 Simulate Heavy Rain"}</button>
-            <button className="mini-button" onClick={requestNotifications}>🔔 Enable Alerts</button>
+            <span className="environment-state">{demoWeather ? "Heavy rain simulation" : "Live environmental context"}</span>
+            {sessionRole === "Authority" && <button className={`mini-button ${demoWeather ? "danger" : ""}`} onClick={toggleDemoWeather}>{demoWeather ? "Restore Weather" : "Simulate Heavy Rain"}</button>}
+            {sessionRole !== "Citizen" && <button className="mini-button" onClick={requestNotifications}>Enable Alerts</button>}
           </div>
         </div>
 
         {view === "authority" && (
           <>
-            <div className="page-header"><div><div className="eyebrow">MUNICIPAL SAFETY CONTROL</div><h1>Authority Dashboard</h1><p>Real-time monitoring of public safety hazards</p></div><div className="header-actions"><button className="refresh-button" onClick={() => { fetchHazards(); fetchWeather(); }}>↻ Refresh</button><span className="live-indicator"><span className="status-dot"></span>LIVE</span></div></div>
+            <div id="authority-overview" className="page-header"><div><div className="eyebrow">MUNICIPAL SAFETY CONTROL</div><h1>Authority Dashboard</h1><p>Real-time monitoring of public safety hazards</p></div><div className="header-actions"><button className="refresh-button" onClick={() => { fetchHazards(); fetchWeather(); }}>↻ Refresh</button><span className="live-indicator"><span className="status-dot"></span>LIVE</span></div></div>
 
             <div className="stats-grid">{stats.map(([label, number, desc]) => <div className="stat-card" key={label}><div className="stat-label">{label}</div><div className="stat-number">{number}</div><div className="stat-description">{desc}</div></div>)}</div>
 
             <div className="dashboard-grid">
-              <section className="panel map-panel"><div className="panel-header"><div><h2>Live Hazard Map</h2><span>OSM + GIS exposure intelligence</span></div><span className="panel-badge">{activeHazards.length} ACTIVE</span></div>{renderMap()}</section>
-              <section className="panel priority-panel"><div className="panel-header"><div><h2>Priority Incidents</h2><span>Risk + exposure + weather + observations</span></div><span className="panel-badge">{sortedActive.length}</span></div><div className="priority-list">{sortedActive.length === 0 ? <div className="empty-state">✓ No active hazards</div> : sortedActive.map((hazard) => <div className="priority-item" key={hazard.id}><div><strong>#{hazard.id} {typeIcon(hazard.type)} {typeLabel(hazard.type)}</strong><div>{hazard.description || "No description"}</div><small>{hazard.exposure_label} exposure · {hazard.observation_count || 1} observation(s)</small></div><span className={`risk-badge ${riskClass(getEffectiveRiskLevel(hazard))}`}>{getEffectiveRiskLevel(hazard)} · {getEffectiveRiskScore(hazard)}</span></div>)}</div></section>
+              <section id="authority-map" className="panel map-panel"><div className="panel-header"><div><h2>Live Hazard Map</h2><span>OSM + GIS exposure intelligence</span></div><span className="panel-badge">{activeHazards.length} ACTIVE</span></div>{renderMap()}</section>
+              <section id="authority-priority" className="panel priority-panel"><div className="panel-header"><div><h2>Priority Incidents</h2><span>Risk + exposure + weather + observations</span></div><span className="panel-badge">{sortedActive.length}</span></div><div className="priority-list">{sortedActive.length === 0 ? <div className="empty-state">✓ No active hazards</div> : sortedActive.map((hazard) => <div className="priority-item" key={hazard.id}><div><strong>#{hazard.id} {typeIcon(hazard.type)} {typeLabel(hazard.type)}</strong><div>{hazard.description || "No description"}</div><small>{hazard.exposure_label} exposure · {hazard.observation_count || 1} observation(s)</small></div><span className={`risk-badge ${riskClass(getEffectiveRiskLevel(hazard))}`}>{getEffectiveRiskLevel(hazard)} · {getEffectiveRiskScore(hazard)}</span></div>)}</div></section>
             </div>
 
             <div className="intelligence-grid">
@@ -649,9 +745,9 @@ function App() {
 
         {view === "citizen" && (
           <>
-            <div className="page-header"><div><div className="eyebrow">PUBLIC SAFETY REPORTING</div><h1>Citizen Portal</h1><p>Report a temporary public safety hazard and see warnings near you</p></div></div>
+            <div id="citizen-top" className="page-header"><div><div className="eyebrow">PUBLIC SAFETY REPORTING</div><h1>Citizen Portal</h1><p>Report a temporary public safety hazard and see warnings near you</p></div></div>
             <div className="citizen-layout">
-              <section className="panel citizen-form-panel"><div className="panel-header"><div><h2>Report Hazard</h2><span>Detect · Verify · Assess</span></div></div>
+              <section id="citizen-report" className="panel citizen-form-panel"><div className="panel-header"><div><h2>Report Hazard</h2><span>Detect · Verify · Assess</span></div></div>
                 <form className="hazard-form" onSubmit={createHazard}>
                   <label>Hazard Type<select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>{HAZARD_TYPES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
                   <div className="form-row"><label>Latitude<input type="number" step="any" value={form.latitude} onChange={(e) => setForm({ ...form, latitude: e.target.value })} /></label><label>Longitude<input type="number" step="any" value={form.longitude} onChange={(e) => setForm({ ...form, longitude: e.target.value })} /></label></div>
@@ -662,9 +758,9 @@ function App() {
                   <button className="submit-button" type="submit" disabled={loading || (photo && verification && verification.confidence < 60)}>{loading ? "Processing intelligence..." : verification?.match === false ? "Submit for Human Review" : "Submit Hazard Report"}</button>
                 </form>
               </section>
-              <section className="panel citizen-map-panel"><div className="panel-header"><div><h2>Nearby Hazards & Warnings</h2><span>Active hazards are visible before you travel</span></div><span className="panel-badge">{alerts.length} ALERTS</span></div>{renderMap("citizen-map")}</section>
+              <section id="citizen-map-panel" className="panel citizen-map-panel"><div className="panel-header"><div><h2>Nearby Hazards & Warnings</h2><span>Active hazards are visible before you travel</span></div><span className="panel-badge">{alerts.length} ALERTS</span></div>{renderMap("citizen-map")}</section>
             </div>
-            <section className="panel safer-route-panel">
+            <section id="safer-route-panel" className="panel safer-route-panel">
               <div className="panel-header"><div><h2>🛣️ Safer Movement</h2><span>Plan around active HazardPulse risks before you travel</span></div><span className="panel-badge">ROUTE SAFETY</span></div>
               <div className="route-planner">
                 <div className="route-search-row">
@@ -704,9 +800,9 @@ function App() {
 
         {view === "operations" && (
           <>
-            <div className="page-header"><div><div className="eyebrow">MUNICIPAL RESPONSE CONTROL</div><h1>Municipal Operations</h1><p>Prioritize, dispatch and verify field responses</p></div><div className="header-actions"><button className="refresh-button" onClick={fetchHazards}>↻ Refresh</button><span className="live-indicator"><span className="status-dot"></span>LIVE</span></div></div>
+            <div id="operations-top" className="page-header"><div><div className="eyebrow">FIELD RESPONSE OPERATIONS</div><h1>Field Response</h1><p>Execute assigned work, verify evidence and close hazards</p></div><div className="header-actions"><button className="refresh-button" onClick={fetchHazards}>↻ Refresh</button><span className="live-indicator"><span className="status-dot"></span>LIVE</span></div></div>
             <div className="stats-grid">{[["ACTIVE", activeHazards.length, "Open incidents"],["ASSIGNED", assignedCount,"Team assigned"],["IN PROGRESS",inProgressCount,"Field response"],["RESOLVED",resolvedCount,"Verified completions"]].map(([label,number,desc]) => <div className="stat-card" key={label}><div className="stat-label">{label}</div><div className="stat-number">{number}</div><div className="stat-description">{desc}</div></div>)}</div>
-            <section className="panel operations-panel"><div className="panel-header"><div><h2>Response Queue</h2><span>Highest dynamic risk appears first</span></div><span className="panel-badge">{activeHazards.length} ACTIVE</span></div><div className="operations-list">{sortedActive.length === 0 ? <div className="empty-state">✓ No active response required</div> : sortedActive.map((hazard) => <div className="operation-card" key={hazard.id}><div className="operation-title"><div><strong>#{hazard.id} {typeIcon(hazard.type)} {typeLabel(hazard.type)}</strong><p>{hazard.description || "No description provided"}</p></div><span className={`risk-badge ${riskClass(getEffectiveRiskLevel(hazard))}`}>{getEffectiveRiskLevel(hazard)} · {getEffectiveRiskScore(hazard)}</span></div><div className="operation-meta"><span>📍 {Number(hazard.latitude).toFixed(4)}, {Number(hazard.longitude).toFixed(4)}</span><span>Status: <strong>{statusLabel(hazard.status)}</strong></span><span>Exposure: <strong>{hazard.exposure_label}</strong></span><span>Observations: <strong>{hazard.observation_count || 1}</strong></span>{hazard.work_order_id && <span>Work order: <strong>{hazard.work_order_id}</strong></span>}</div><div className="operation-actions"><select value={selectedTeams[hazard.id] || hazard.assigned_team || ""} onChange={(e) => setSelectedTeams({ ...selectedTeams, [hazard.id]: e.target.value })}><option value="">Select Team</option>{TEAMS.map((team) => <option key={team}>{team}</option>)}</select><button className="operation-button" onClick={() => assignTeam(hazard.id, selectedTeams[hazard.id] || hazard.assigned_team)}>Assign Team</button>{(hazard.status === "ASSIGNED" || hazard.status === "REPORTED") && <button className="operation-button primary" onClick={() => updateHazardStatus(hazard.id, "IN_PROGRESS")}>▶ Start Response</button>}{hazard.status === "IN_PROGRESS" && <><label className="proof-input">Field Proof<input type="file" accept="image/*" onChange={(e) => verifyProofFile(hazard.id, e.target.files?.[0] || null)} /></label>{proofResults[hazard.id] && <span className="proof-verified">✓ Proof verified {proofResults[hazard.id].verification_confidence}%</span>}<button className="operation-button success" disabled={proofLoading || !proofResults[hazard.id] || proofResults[hazard.id].status !== "PROOF_VERIFIED"} onClick={() => updateHazardStatus(hazard.id, "RESOLVED")}>✓ Mark Resolved</button></>}</div></div>)}</div></section>
+            <section id="operations-queue" className="panel operations-panel"><div className="panel-header"><div><h2>Response Queue</h2><span>Highest dynamic risk appears first</span></div><span className="panel-badge">{activeHazards.length} ACTIVE</span></div><div className="operations-list">{sortedActive.length === 0 ? <div className="empty-state">✓ No active response required</div> : sortedActive.map((hazard) => <div className="operation-card" key={hazard.id}><div className="operation-title"><div><strong>#{hazard.id} {typeIcon(hazard.type)} {typeLabel(hazard.type)}</strong><p>{hazard.description || "No description provided"}</p></div><span className={`risk-badge ${riskClass(getEffectiveRiskLevel(hazard))}`}>{getEffectiveRiskLevel(hazard)} · {getEffectiveRiskScore(hazard)}</span></div><div className="operation-meta"><span>📍 {Number(hazard.latitude).toFixed(4)}, {Number(hazard.longitude).toFixed(4)}</span><span>Status: <strong>{statusLabel(hazard.status)}</strong></span><span>Exposure: <strong>{hazard.exposure_label}</strong></span><span>Observations: <strong>{hazard.observation_count || 1}</strong></span>{hazard.work_order_id && <span>Work order: <strong>{hazard.work_order_id}</strong></span>}</div><div className="operation-actions"><select value={selectedTeams[hazard.id] || hazard.assigned_team || ""} onChange={(e) => setSelectedTeams({ ...selectedTeams, [hazard.id]: e.target.value })}><option value="">Select Team</option>{TEAMS.map((team) => <option key={team}>{team}</option>)}</select><button className="operation-button" onClick={() => assignTeam(hazard.id, selectedTeams[hazard.id] || hazard.assigned_team)}>Assign Team</button>{(hazard.status === "ASSIGNED" || hazard.status === "REPORTED") && <button className="operation-button primary" onClick={() => updateHazardStatus(hazard.id, "IN_PROGRESS")}>▶ Start Response</button>}{hazard.status === "IN_PROGRESS" && <><label className="proof-input">Field Proof<input type="file" accept="image/*" onChange={(e) => verifyProofFile(hazard.id, e.target.files?.[0] || null)} /></label>{proofResults[hazard.id] && <span className="proof-verified">✓ Proof verified {proofResults[hazard.id].verification_confidence}%</span>}<button className="operation-button success" disabled={proofLoading || !proofResults[hazard.id] || proofResults[hazard.id].status !== "PROOF_VERIFIED"} onClick={() => updateHazardStatus(hazard.id, "RESOLVED")}>✓ Mark Resolved</button></>}</div></div>)}</div></section>
             <div className="workflow-strip"><div><b>1 · Prioritize</b><span>Dynamic risk combines severity, exposure, confidence, observations and weather.</span></div><div><b>2 · Dispatch</b><span>Match the incident to a municipal response team and work order.</span></div><div><b>3 · Verify</b><span>Field evidence closes the loop and removes the hazard from active warnings.</span></div></div>
           </>
         )}
@@ -723,7 +819,7 @@ function App() {
         {view === "alerts" && (
           <>
             <div className="page-header"><div><div className="eyebrow">PUBLIC SAFETY NOTIFICATIONS</div><h1>Safety Alerts</h1><p>Location-aware warnings generated from the live hazard state</p></div><button className="refresh-button" onClick={requestNotifications}>🔔 Enable Browser Alerts</button></div>
-            <section className="panel alerts-panel"><div className="panel-header"><div><h2>Active Warnings</h2><span>High and critical incidents only</span></div><span className="panel-badge">{alerts.length}</span></div><div className="alert-list">{alerts.length === 0 ? <div className="empty-state">✓ No high-risk alerts right now</div> : alerts.map((alert) => <div className="alert-card" key={alert.id}><div className={`alert-icon ${riskClass(alert.risk_level)}`}>⚠</div><div><strong>{alert.title}</strong><p>{alert.message}</p><small>Exposure: {alert.exposure} · Hazard #{alert.id}</small></div><button className="mini-button" onClick={() => setView("citizen")}>View map</button></div>)}</div></section>
+            <section className="panel alerts-panel"><div className="panel-header"><div><h2>Active Warnings</h2><span>High and critical incidents only</span></div><span className="panel-badge">{alerts.length}</span></div><div className="alert-list">{alerts.length === 0 ? <div className="empty-state">✓ No high-risk alerts right now</div> : alerts.map((alert) => <div className="alert-card" key={alert.id}><div className={`alert-icon ${riskClass(alert.risk_level)}`}>⚠</div><div><strong>{alert.title}</strong><p>{alert.message}</p><small>Exposure: {alert.exposure} · Hazard #{alert.id}</small></div><button className="mini-button" onClick={() => navigateDashboard("authority", "authority-map", "map")}>View map</button></div>)}</div></section>
             <div className="safe-route-card"><div><b>Safer movement</b><span>OSRM calculates a drivable route, then HazardPulse scores available alternatives against active hazard proximity.</span></div><div className="route-controls"><input aria-label="Start latitude" value={routeForm.startLat} onChange={(e) => setRouteForm({ ...routeForm, startLat: e.target.value })} placeholder="Start lat" /><input aria-label="Start longitude" value={routeForm.startLng} onChange={(e) => setRouteForm({ ...routeForm, startLng: e.target.value })} placeholder="Start lng" /><input aria-label="Destination latitude" value={routeForm.endLat} onChange={(e) => setRouteForm({ ...routeForm, endLat: e.target.value })} placeholder="Destination lat" /><input aria-label="Destination longitude" value={routeForm.endLng} onChange={(e) => setRouteForm({ ...routeForm, endLng: e.target.value })} placeholder="Destination lng" /><button className="operation-button primary" onClick={calculateSaferRoute} disabled={routeLoading}>{routeLoading ? "Calculating..." : "Calculate Safer Route"}</button></div>{saferRoute && <div className="route-result">✓ {saferRoute.distance_km} km · {saferRoute.duration_min} min · {saferRoute.hazards_near_route.length ? `${saferRoute.hazards_near_route.length} hazard(s) near route` : "No active hazards near selected route"}</div>}<button className="operation-button" onClick={() => setView("citizen")}>Open Safety Map</button></div>
           </>
         )}
