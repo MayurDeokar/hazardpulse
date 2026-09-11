@@ -4,6 +4,9 @@ from pathlib import Path
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 import json
+import os
+
+from PIL import Image, ImageStat
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -357,13 +360,16 @@ async def verify_image(
     hazard_type: str = Form(...),
     image: UploadFile = File(...),
 ):
-    """Prototype image-verification endpoint.
+    """Run an image-dependent computer-vision verification pass.
 
-    This intentionally returns a transparent demo confidence score rather than claiming a
-    trained production vision model. The API contract is ready for a YOLO/PyTorch model later.
+    This is a lightweight local prototype adapter: it extracts visual features from the
+    uploaded image and compares them with hazard-specific visual signatures. It is not a
+    production-trained detector, but unlike the previous hard-coded response it genuinely
+    changes with the uploaded image.
     """
     allowed = {"OPEN_MANHOLE", "ROAD_EXCAVATION", "WATERLOGGING", "FALLEN_TREE"}
-    if hazard_type.upper() not in allowed:
+    selected = hazard_type.upper()
+    if selected not in allowed:
         raise HTTPException(status_code=400, detail="Unsupported hazard type")
     if not image.content_type or not image.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Please upload an image file")
@@ -372,25 +378,85 @@ async def verify_image(
     if len(contents) > 8 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="Image must be smaller than 8 MB")
 
-    safe_name = Path(image.filename or "hazard.jpg").name
-    target = UPLOAD_DIR / f"{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}_{safe_name}"
-    target.write_bytes(contents)
+    try:
+        pil_image = Image.open(__import__("io").BytesIO(contents)).convert("RGB")
+        width, height = pil_image.size
+        if width < 80 or height < 80:
+            raise ValueError("Image resolution is too small")
+        sample = pil_image.resize((96, 96))
+        pixels = list(sample.getdata())
+        total = max(1, len(pixels))
+        avg_r = sum(px[0] for px in pixels) / total
+        avg_g = sum(px[1] for px in pixels) / total
+        avg_b = sum(px[2] for px in pixels) / total
 
-    demo_confidence = {
-        "OPEN_MANHOLE": 93,
-        "ROAD_EXCAVATION": 91,
-        "WATERLOGGING": 89,
-        "FALLEN_TREE": 92,
-    }[hazard_type.upper()]
+        green = sum(1 for r, g, b in pixels if g > r * 1.12 and g > b * 1.05) / total
+        blue = sum(1 for r, g, b in pixels if b > r * 1.15 and b > g * 1.03) / total
+        warm = sum(1 for r, g, b in pixels if r > b * 1.25 and g > b * 1.08) / total
+        dark = sum(1 for r, g, b in pixels if (r + g + b) / 3 < 65) / total
 
-    return {
-        "status": "VERIFIED",
-        "confidence": demo_confidence,
-        "hazard_type": hazard_type.upper(),
-        "filename": safe_name,
-        "engine": "HazardPulse Vision Verification — prototype adapter",
-        "note": "Prototype confidence; replace adapter with a trained vision model for production.",
-    }
+        # Edge/texture proxy from neighbouring grayscale pixels.
+        gray = [[sum(sample.getpixel((x, y))) / 3 for x in range(96)] for y in range(96)]
+        diffs = []
+        for y in range(95):
+            for x in range(95):
+                diffs.append(abs(gray[y][x] - gray[y][x + 1]))
+                diffs.append(abs(gray[y][x] - gray[y + 1][x]))
+        texture = sum(1 for d in diffs if d > 28) / max(1, len(diffs))
+
+        # Center darkness is particularly useful for an open-hole/manhole visual cue.
+        center = [sample.getpixel((x, y)) for y in range(28, 68) for x in range(28, 68)]
+        center_dark = sum(1 for r, g, b in center if (r + g + b) / 3 < 65) / max(1, len(center))
+
+        features = {
+            "green": green,
+            "blue": blue,
+            "warm": warm,
+            "dark": dark,
+            "texture": texture,
+            "center_dark": center_dark,
+        }
+
+        raw_scores = {
+            "OPEN_MANHOLE": 0.25 + 1.9 * center_dark + 0.45 * dark + 0.25 * texture,
+            "ROAD_EXCAVATION": 0.20 + 1.35 * warm + 0.65 * texture + 0.20 * dark,
+            "WATERLOGGING": 0.20 + 1.75 * blue + 0.35 * (1 - texture) + 0.25 * (1 - dark),
+            "FALLEN_TREE": 0.20 + 1.55 * green + 0.55 * warm + 0.35 * texture,
+        }
+        ranked = sorted(raw_scores.items(), key=lambda item: item[1], reverse=True)
+        best_type, best_raw = ranked[0]
+        second_raw = ranked[1][1]
+        total_raw = sum(max(0.05, value) for value in raw_scores.values())
+        predicted_confidence = round(min(97, max(52, 50 + (best_raw / total_raw) * 70 + (best_raw - second_raw) * 20)))
+
+        selected_raw = raw_scores[selected]
+        selected_confidence = round(min(97, max(45, 50 + (selected_raw / total_raw) * 70 + (selected_raw - second_raw) * 20)))
+        match = selected == best_type
+        confidence = predicted_confidence if match else min(selected_confidence, 69)
+
+        safe_name = Path(image.filename or "hazard.jpg").name
+        target = UPLOAD_DIR / f"{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}_{safe_name}"
+        target.write_bytes(contents)
+
+        return {
+            "status": "VERIFIED" if match and confidence >= 70 else "REVIEW_REQUIRED",
+            "confidence": confidence,
+            "hazard_type": best_type,
+            "selected_hazard_type": selected,
+            "match": match,
+            "filename": safe_name,
+            "engine": "HazardPulse Local Computer Vision — prototype",
+            "evidence_strength": "STRONG" if confidence >= 85 else "MODERATE" if confidence >= 70 else "REVIEW",
+            "risk_signal": (
+                f"Visual features are consistent with {best_type.replace('_', ' ').title()}."
+                if match else
+                f"Image appears more consistent with {best_type.replace('_', ' ').title()} than the selected class."
+            ),
+            "visual_features": {key: round(value, 3) for key, value in features.items()},
+            "note": "Local CV prototype; replace with a trained YOLO/ViT model for production deployment.",
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not analyze image: {exc}")
 
 
 # =========================================================
@@ -399,15 +465,41 @@ async def verify_image(
 
 @app.post("/resolution-proof")
 async def upload_resolution_proof(image: UploadFile = File(...)):
+    """Validate field proof with image quality/content checks before closure."""
     if not image.content_type or not image.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Please upload an image file")
     contents = await image.read()
     if len(contents) > 8 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="Image must be smaller than 8 MB")
-    safe_name = Path(image.filename or "resolution.jpg").name
-    target = UPLOAD_DIR / f"resolution_{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}_{safe_name}"
-    target.write_bytes(contents)
-    return {"filename": safe_name, "stored": target.name, "status": "PROOF_UPLOADED"}
+        raise HTTPException(status_code=400, detail="Proof image must be smaller than 8 MB")
+    if len(contents) < 1024:
+        raise HTTPException(status_code=400, detail="Proof image appears invalid or empty")
+
+    try:
+        pil_image = Image.open(__import__("io").BytesIO(contents)).convert("RGB")
+        width, height = pil_image.size
+        stat = ImageStat.Stat(pil_image)
+        brightness = sum(stat.mean) / 3
+        contrast = sum(stat.stddev) / 3
+        if width < 160 or height < 160:
+            raise ValueError("Proof image resolution is too small")
+        if contrast < 8:
+            raise ValueError("Proof image has insufficient visual detail")
+
+        safe_name = Path(image.filename or "resolution.jpg").name
+        target = UPLOAD_DIR / f"resolution_{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}_{safe_name}"
+        target.write_bytes(contents)
+        confidence = round(min(99, max(82, 82 + min(12, contrast / 12))))
+        return {
+            "filename": safe_name,
+            "stored": target.name,
+            "status": "PROOF_VERIFIED",
+            "verification_confidence": confidence,
+            "engine": "HazardPulse Field Evidence Verification — prototype",
+            "image_quality": {"width": width, "height": height, "brightness": round(brightness, 1), "contrast": round(contrast, 1)},
+            "note": "Proof image passed file, resolution and visual-detail checks. Human/ML semantic verification should be added for production.",
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Proof verification failed: {exc}")
 
 
 @app.get("/exposure")
@@ -477,6 +569,172 @@ def update_status(hazard_id: int, status_data: StatusUpdate, db: Session = Depen
     db.commit()
     db.refresh(hazard)
     return serialize_hazard(hazard)
+
+
+
+# =========================================================
+# SAFER ROUTING
+# =========================================================
+
+def point_to_route_distance_km(route_points, latitude, longitude):
+    if not route_points:
+        return 999.0
+    return min(
+        distance_km(latitude, longitude, point[1], point[0])
+        for point in route_points
+    )
+
+
+@app.get("/geocode")
+def geocode_destination(q: str):
+    """Search a destination using OpenStreetMap Nominatim."""
+    query = q.strip()
+    if len(query) < 2:
+        return {"results": []}
+
+    params = urlencode({
+        "q": query,
+        "format": "jsonv2",
+        "limit": 5,
+        "countrycodes": "in",
+        "addressdetails": 1,
+    })
+    url = f"https://nominatim.openstreetmap.org/search?{params}"
+    try:
+        request = Request(
+            url,
+            headers={"User-Agent": "HazardPulse/2.2 (prototype)"},
+        )
+        with urlopen(request, timeout=8) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        return {
+            "results": [
+                {
+                    "name": item.get("display_name", "Destination"),
+                    "latitude": float(item["lat"]),
+                    "longitude": float(item["lon"]),
+                    "type": item.get("type"),
+                }
+                for item in data
+            ]
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Destination search unavailable: {exc}")
+
+
+@app.get("/safer-route")
+def safer_route(
+    start_lat: float,
+    start_lng: float,
+    end_lat: float,
+    end_lng: float,
+    db: Session = Depends(get_db),
+):
+    """Compare available OSRM routes against active hazards.
+
+    If OSRM returns only one route (common for short city trips), add two transparent
+    demo detour candidates so the prototype can still demonstrate hazard avoidance.
+    """
+    params = urlencode({
+        "alternatives": "3",
+        "overview": "full",
+        "geometries": "geojson",
+        "steps": "false",
+    })
+    url = (
+        f"https://router.project-osrm.org/route/v1/driving/"
+        f"{start_lng},{start_lat};{end_lng},{end_lat}?{params}"
+    )
+    source = "OSRM"
+    routes = []
+    try:
+        request = Request(url, headers={"User-Agent": "HazardPulse/2.1"})
+        with urlopen(request, timeout=10) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        routes = data.get("routes", [])
+    except Exception:
+        routes = []
+
+    if not routes:
+        source = "HazardPulse demo routing fallback"
+        straight = [
+            [start_lng, start_lat],
+            [(start_lng + end_lng) / 2, (start_lat + end_lat) / 2],
+            [end_lng, end_lat],
+        ]
+        lat_offset = 0.006 if abs(end_lat - start_lat) < 0.012 else 0.004
+        lng_offset = 0.006 if abs(end_lng - start_lng) < 0.012 else 0.004
+        detour_a = [
+            [start_lng, start_lat],
+            [(start_lng + end_lng) / 2 + lng_offset, (start_lat + end_lat) / 2],
+            [end_lng, end_lat],
+        ]
+        detour_b = [
+            [start_lng, start_lat],
+            [(start_lng + end_lng) / 2, (start_lat + end_lat) / 2 + lat_offset],
+            [end_lng, end_lat],
+        ]
+        routes = [{"geometry": {"coordinates": coords}, "distance": distance_km(start_lat, start_lng, end_lat, end_lng) * 1000 * factor, "duration": distance_km(start_lat, start_lng, end_lat, end_lng) * factor / 25 * 60 * 1000 / 1000} for coords, factor in [(straight, 1.0), (detour_a, 1.18), (detour_b, 1.22)]]
+    elif len(routes) == 1:
+        # Transparent demo alternatives only; real OSRM alternatives are preferred.
+        source = "OSRM + demo hazard-avoidance alternatives"
+        base = routes[0]
+        coords = base.get("geometry", {}).get("coordinates", [])
+        if len(coords) >= 2:
+            mid = coords[len(coords) // 2]
+            routes.append({
+                "geometry": {"coordinates": [coords[0], [mid[0] + 0.006, mid[1] + 0.002], coords[-1]]},
+                "distance": base.get("distance", 0) * 1.16,
+                "duration": base.get("duration", 0) * 1.16,
+            })
+            routes.append({
+                "geometry": {"coordinates": [coords[0], [mid[0] - 0.006, mid[1] - 0.002], coords[-1]]},
+                "distance": base.get("distance", 0) * 1.22,
+                "duration": base.get("duration", 0) * 1.22,
+            })
+
+    active = db.query(Hazard).filter(Hazard.status != "RESOLVED").all()
+    candidates = []
+    for index, route in enumerate(routes):
+        coordinates = route.get("geometry", {}).get("coordinates", [])
+        hazard_clearance = 999.0
+        hazards_near_route = []
+        for hazard in active:
+            hazard_data = serialize_hazard(hazard)
+            clearance = point_to_route_distance_km(coordinates, hazard.latitude, hazard.longitude)
+            if clearance < 0.20:
+                hazards_near_route.append({
+                    "id": hazard.id,
+                    "type": hazard.type,
+                    "risk_level": hazard_data["risk_level"],
+                    "risk_score": hazard_data["risk_score"],
+                    "distance_km": round(clearance, 3),
+                })
+            hazard_clearance = min(hazard_clearance, clearance)
+
+        penalty = sum(
+            80 if item["risk_level"] == "CRITICAL" else 45 if item["risk_level"] == "HIGH" else 15
+            for item in hazards_near_route
+        )
+        score = round((route.get("duration", 0) / 60) + penalty - min(hazard_clearance, 1) * 10, 2)
+        candidates.append((score, index, route, hazards_near_route, hazard_clearance))
+
+    _, selected_index, selected, hazards_near_route, hazard_clearance = min(candidates, key=lambda item: item[0])
+    return {
+        "status": "SAFE_ROUTE_SELECTED",
+        "engine": f"{source} + HazardPulse hazard-avoidance scoring",
+        "route_index": selected_index,
+        "route_options": len(candidates),
+        "distance_km": round(selected.get("distance", 0) / 1000, 2),
+        "duration_min": round(selected.get("duration", 0) / 60, 1),
+        "hazards_near_route": hazards_near_route,
+        "minimum_hazard_clearance_km": round(hazard_clearance, 3) if hazard_clearance < 999 else None,
+        "geometry": selected.get("geometry", {}),
+        "comparison": [
+            {"route_index": idx, "distance_km": round(route.get("distance", 0) / 1000, 2), "duration_min": round(route.get("duration", 0) / 60, 1), "hazard_count": len(near)}
+            for _, idx, route, near, _ in sorted(candidates, key=lambda item: item[1])
+        ],
+    }
 
 
 # =========================================================

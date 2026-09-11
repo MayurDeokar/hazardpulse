@@ -5,7 +5,10 @@ import {
   MapContainer,
   Marker,
   Popup,
+  Polyline,
   TileLayer,
+  useMap,
+  useMapEvents,
 } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
@@ -45,6 +48,26 @@ const hazardIcon = L.divIcon({
   iconAnchor: [13, 13],
 });
 
+function MapInteraction({ onDestinationClick }) {
+  useMapEvents({
+    click: (event) => onDestinationClick?.(event.latlng.lat, event.latlng.lng),
+  });
+  return null;
+}
+
+function MapViewport({ currentLocation, destination }) {
+  const map = useMap();
+  useEffect(() => {
+    if (currentLocation) {
+      map.setView([currentLocation.latitude, currentLocation.longitude], Math.max(map.getZoom(), 14), { animate: true });
+    }
+  }, [currentLocation, map]);
+  useEffect(() => {
+    if (destination) map.flyTo(destination, Math.max(map.getZoom(), 14), { animate: true, duration: 0.8 });
+  }, [destination, map]);
+  return null;
+}
+
 function App() {
   const [view, setView] = useState("authority");
   const [hazards, setHazards] = useState([]);
@@ -58,6 +81,17 @@ function App() {
   const [selectedTeams, setSelectedTeams] = useState({});
   const [photo, setPhoto] = useState(null);
   const [proofFiles, setProofFiles] = useState({});
+  const [proofResults, setProofResults] = useState({});
+  const [saferRoute, setSaferRoute] = useState(null);
+  const [routeLoading, setRouteLoading] = useState(false);
+  const [routeForm, setRouteForm] = useState({ startLat: "18.5204", startLng: "73.8567", endLat: "18.5314", endLng: "73.8477" });
+  const [destinationQuery, setDestinationQuery] = useState("");
+  const [destinationResults, setDestinationResults] = useState([]);
+  const [destinationSearching, setDestinationSearching] = useState(false);
+  const [destinationName, setDestinationName] = useState("");
+  const [currentLocation, setCurrentLocation] = useState(null);
+  const [locationTracking, setLocationTracking] = useState(false);
+  const [locationError, setLocationError] = useState("");
   const [verification, setVerification] = useState(null);
   const [locationMessage, setLocationMessage] = useState("");
   const [toast, setToast] = useState("");
@@ -203,6 +237,98 @@ function App() {
     [activeHazards, weather]
   );
 
+  useEffect(() => {
+    if (!("geolocation" in navigator)) {
+      setLocationError("Live location is not supported by this browser.");
+      return undefined;
+    }
+
+    const watchId = navigator.geolocation.watchPosition(
+      (position) => {
+        const next = {
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+          accuracy: position.coords.accuracy,
+          heading: position.coords.heading,
+          speed: position.coords.speed,
+        };
+        setCurrentLocation(next);
+        setLocationTracking(true);
+        setLocationError("");
+      },
+      (error) => {
+        setLocationTracking(false);
+        setLocationError(error.code === 1 ? "Location permission denied." : "Live location unavailable.");
+      },
+      { enableHighAccuracy: true, maximumAge: 5000, timeout: 10000 }
+    );
+
+    return () => navigator.geolocation.clearWatch(watchId);
+  }, []);
+
+  useEffect(() => {
+    if (!currentLocation) return;
+    setRouteForm((current) => ({
+      ...current,
+      startLat: currentLocation.latitude.toFixed(6),
+      startLng: currentLocation.longitude.toFixed(6),
+    }));
+  }, [currentLocation]);
+
+  const searchDestination = async () => {
+    const query = destinationQuery.trim();
+    if (query.length < 2) {
+      setDestinationResults([]);
+      showToast("Type a destination first.");
+      return;
+    }
+    setDestinationSearching(true);
+    try {
+      const response = await fetch(`${API_URL}/geocode?q=${encodeURIComponent(query)}`);
+      if (!response.ok) throw new Error("Destination search unavailable");
+      const data = await response.json();
+      setDestinationResults(data.results || []);
+      if (!data.results?.length) showToast("No destination found. Try a landmark or area name.");
+    } catch (error) {
+      console.error(error);
+      showToast("Destination search is unavailable.");
+    } finally {
+      setDestinationSearching(false);
+    }
+  };
+
+  const selectDestination = (result) => {
+    setDestinationName(result.name);
+    setDestinationQuery(result.name.split(",")[0]);
+    setDestinationResults([]);
+    setRouteForm((current) => ({
+      ...current,
+      endLat: String(result.latitude),
+      endLng: String(result.longitude),
+    }));
+    showToast("Destination set on map.");
+  };
+
+  const useLiveLocation = () => {
+    if (!currentLocation) {
+      showToast("Waiting for your live location. Check browser location permission.");
+      return;
+    }
+    setRouteForm((current) => ({
+      ...current,
+      startLat: currentLocation.latitude.toFixed(6),
+      startLng: currentLocation.longitude.toFixed(6),
+    }));
+    showToast(`Live location set · ±${Math.round(currentLocation.accuracy)} m`);
+  };
+
+  const setMapDestination = (lat, lng) => {
+    setRouteForm((current) => ({ ...current, endLat: lat.toFixed(6), endLng: lng.toFixed(6) }));
+    setDestinationName("Map-selected destination");
+    setDestinationQuery(`${lat.toFixed(5)}, ${lng.toFixed(5)}`);
+    showToast("Destination pinned on map.");
+  };
+
   const setRole = (role) => {
     setSessionRole(role);
     localStorage.setItem("hazardpulse-role", role);
@@ -304,27 +430,68 @@ function App() {
     }
   }
 
+  async function verifyProofFile(hazardId, file) {
+    if (!file) {
+      setProofFiles({ ...proofFiles, [hazardId]: null });
+      setProofResults({ ...proofResults, [hazardId]: null });
+      return;
+    }
+    setProofFiles({ ...proofFiles, [hazardId]: file });
+    setProofLoading(true);
+    try {
+      const data = new FormData();
+      data.append("image", file);
+      const response = await fetch(`${API_URL}/resolution-proof`, { method: "POST", body: data });
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({}));
+        throw new Error(detail.detail || "Proof verification failed");
+      }
+      const result = await response.json();
+      setProofResults({ ...proofResults, [hazardId]: result });
+      showToast(`Field proof verified: ${result.verification_confidence}%`);
+    } catch (error) {
+      console.error(error);
+      setProofResults({ ...proofResults, [hazardId]: null });
+      showToast(error.message || "Proof verification failed.");
+    } finally {
+      setProofLoading(false);
+    }
+  }
+
+  async function calculateSaferRoute() {
+    setRouteLoading(true);
+    try {
+      const params = new URLSearchParams({
+        start_lat: routeForm.startLat,
+        start_lng: routeForm.startLng,
+        end_lat: routeForm.endLat,
+        end_lng: routeForm.endLng,
+      });
+      const response = await fetch(`${API_URL}/safer-route?${params}`);
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({}));
+        throw new Error(detail.detail || "Safer route unavailable");
+      }
+      const result = await response.json();
+      setSaferRoute(result);
+      showToast(`Safer route selected · ${result.distance_km} km`);
+    } catch (error) {
+      console.error(error);
+      showToast(error.message || "Safer route unavailable.");
+    } finally {
+      setRouteLoading(false);
+    }
+  }
+
   async function updateHazardStatus(hazardId, status) {
     let proofName = null;
     if (status === "RESOLVED") {
-      const file = proofFiles[hazardId];
-      if (file) {
-        setProofLoading(true);
-        try {
-          const data = new FormData();
-          data.append("image", file);
-          const response = await fetch(`${API_URL}/resolution-proof`, { method: "POST", body: data });
-          if (!response.ok) throw new Error("Proof upload failed");
-          const proof = await response.json();
-          proofName = proof.filename;
-        } catch (error) {
-          console.error(error);
-          showToast("Proof upload failed; response not closed.");
-          setProofLoading(false);
-          return;
-        }
-        setProofLoading(false);
+      const proof = proofResults[hazardId];
+      if (!proof || proof.status !== "PROOF_VERIFIED") {
+        showToast("Upload and verify field proof before resolving.");
+        return;
       }
+      proofName = proof.filename;
     }
 
     try {
@@ -368,7 +535,22 @@ function App() {
   const renderMap = (className = "") => (
     <div className={`map-wrapper ${className}`}>
       <MapContainer center={PUNE_CENTER} zoom={12} style={{ width: "100%", height: "100%" }}>
+        <MapInteraction onDestinationClick={setMapDestination} />
+        <MapViewport currentLocation={currentLocation} destination={saferRoute ? [Number(routeForm.endLat), Number(routeForm.endLng)] : null} />
         <TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+        {currentLocation && (
+          <>
+            <Circle center={[currentLocation.latitude, currentLocation.longitude]} radius={Math.max(10, currentLocation.accuracy || 20)} pathOptions={{ color: "#2563eb", fillColor: "#2563eb", fillOpacity: 0.08, weight: 1 }} />
+            <CircleMarker center={[currentLocation.latitude, currentLocation.longitude]} radius={9} pathOptions={{ color: "#ffffff", weight: 3, fillColor: "#2563eb", fillOpacity: 1 }}>
+              <Popup><strong>📍 You are here</strong><br />Accuracy: ±{Math.round(currentLocation.accuracy || 0)} m<br />{locationTracking ? "Live location tracking active" : "Location fixed"}</Popup>
+            </CircleMarker>
+          </>
+        )}
+        {routeForm.endLat && routeForm.endLng && destinationName && (
+          <Marker position={[Number(routeForm.endLat), Number(routeForm.endLng)]}>
+            <Popup><strong>🏁 Destination</strong><br />{destinationName}</Popup>
+          </Marker>
+        )}
         {exposurePoints.map(([lat, lng, name, kind]) => (
           <CircleMarker key={name} center={[lat, lng]} radius={6} pathOptions={{ color: "#5b8def", fillColor: "#5b8def", fillOpacity: 0.7 }}>
             <Popup><strong>{name}</strong><br />Exposure layer: {kind}</Popup>
@@ -390,6 +572,12 @@ function App() {
             </Marker>
           </Fragment>
         ))}
+        {saferRoute?.geometry?.coordinates?.length > 1 && (
+          <Polyline
+            positions={saferRoute.geometry.coordinates.map(([lng, lat]) => [lat, lng])}
+            pathOptions={{ color: "#22c55e", weight: 5, opacity: 0.9, dashArray: "8 6" }}
+          />
+        )}
       </MapContainer>
     </div>
   );
@@ -470,12 +658,46 @@ function App() {
                   <button type="button" className="location-button" onClick={captureLocation}>◎ Capture GPS Location</button>{locationMessage && <div className="helper-text">{locationMessage}</div>}
                   <label>Description<textarea rows="4" placeholder="Describe what you observed..." value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></label>
                   <label>Photo<input type="file" accept="image/*" onChange={(e) => verifySelectedPhoto(e.target.files?.[0])} /></label>
-                  {verification && <div className="verification-card"><div><b>✓ AI Verification</b><span>{verification.engine}</span></div><strong>{verification.confidence}%</strong></div>}
-                  <button className="submit-button" type="submit" disabled={loading}>{loading ? "Processing intelligence..." : "Submit Hazard Report"}</button>
+                  {verification && <div className={`verification-card ${verification.match === false ? "review" : ""}`}><div><b>{verification.match === false ? "⚠ AI Review Required" : "✓ AI Verification"}</b><span>{verification.engine}</span><small>Predicted: {verification.hazard_type?.replaceAll("_", " ")} · Selected: {verification.selected_hazard_type?.replaceAll("_", " ")}</small><small>{verification.risk_signal}</small></div><strong>{verification.confidence}%</strong></div>}
+                  <button className="submit-button" type="submit" disabled={loading || (photo && verification && verification.confidence < 60)}>{loading ? "Processing intelligence..." : verification?.match === false ? "Submit for Human Review" : "Submit Hazard Report"}</button>
                 </form>
               </section>
               <section className="panel citizen-map-panel"><div className="panel-header"><div><h2>Nearby Hazards & Warnings</h2><span>Active hazards are visible before you travel</span></div><span className="panel-badge">{alerts.length} ALERTS</span></div>{renderMap("citizen-map")}</section>
             </div>
+            <section className="panel safer-route-panel">
+              <div className="panel-header"><div><h2>🛣️ Safer Movement</h2><span>Plan around active HazardPulse risks before you travel</span></div><span className="panel-badge">ROUTE SAFETY</span></div>
+              <div className="route-planner">
+                <div className="route-search-row">
+                  <div className="destination-search">
+                    <span className="search-icon">⌕</span>
+                    <input value={destinationQuery} onChange={(e) => setDestinationQuery(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") searchDestination(); }} placeholder="Search destination (e.g. Pune Railway Station)" />
+                    <button className="mini-button" type="button" onClick={searchDestination} disabled={destinationSearching}>{destinationSearching ? "Searching…" : "Search"}</button>
+                  </div>
+                  <button className="location-button" type="button" onClick={useLiveLocation}>◎ Use my live location</button>
+                </div>
+                {destinationResults.length > 0 && (
+                  <div className="destination-results">
+                    {destinationResults.map((result, index) => (
+                      <button type="button" key={`${result.latitude}-${result.longitude}-${index}`} onClick={() => selectDestination(result)}>
+                        <strong>📍 {result.name.split(",")[0]}</strong><span>{result.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <div className="route-help">Search a place, choose a result, or <b>click anywhere on the map to pin your destination.</b></div>
+                <div className="route-status-row">
+                  <span className={`tracking-pill ${locationTracking ? "on" : ""}`}>{locationTracking ? "● LIVE LOCATION" : "○ LOCATION OFF"}</span>
+                  {currentLocation && <span>±{Math.round(currentLocation.accuracy || 0)} m GPS accuracy</span>}
+                  {locationError && <span className="helper-error">{locationError}</span>}
+                </div>
+                <div className="route-coordinates">
+                  <div><label>From</label><span>{Number(routeForm.startLat).toFixed(5)}, {Number(routeForm.startLng).toFixed(5)}</span></div>
+                  <div><label>To</label><span>{destinationName || "Select a destination"}</span></div>
+                  <button className="operation-button primary" type="button" onClick={calculateSaferRoute} disabled={routeLoading || !destinationName}>{routeLoading ? "Finding safer route…" : "🚗 Find Safer Route"}</button>
+                </div>
+              </div>
+              {saferRoute ? <div className="route-result route-result-rich"><div><b>✓ Safer route selected</b><span>{saferRoute.distance_km} km · {saferRoute.duration_min} min</span></div><div><strong>{saferRoute.hazards_near_route?.length || 0}</strong><span>hazards near route</span></div><small>{saferRoute.engine}</small></div> : <div className="route-empty">Your route will be drawn directly on the map. HazardPulse chooses the route with the lowest safety penalty, not simply the shortest distance.</div>}
+            </section>
             <div className="alert-strip"><span>⚠️</span><div><b>{alerts.length ? `${alerts.length} active safety warning${alerts.length > 1 ? "s" : ""}` : "No high-risk warnings nearby"}</b><span>HazardPulse warnings are based on current risk intelligence and are advisory.</span></div><button className="mini-button" onClick={requestNotifications}>Enable browser alerts</button></div>
           </>
         )}
@@ -484,7 +706,7 @@ function App() {
           <>
             <div className="page-header"><div><div className="eyebrow">MUNICIPAL RESPONSE CONTROL</div><h1>Municipal Operations</h1><p>Prioritize, dispatch and verify field responses</p></div><div className="header-actions"><button className="refresh-button" onClick={fetchHazards}>↻ Refresh</button><span className="live-indicator"><span className="status-dot"></span>LIVE</span></div></div>
             <div className="stats-grid">{[["ACTIVE", activeHazards.length, "Open incidents"],["ASSIGNED", assignedCount,"Team assigned"],["IN PROGRESS",inProgressCount,"Field response"],["RESOLVED",resolvedCount,"Verified completions"]].map(([label,number,desc]) => <div className="stat-card" key={label}><div className="stat-label">{label}</div><div className="stat-number">{number}</div><div className="stat-description">{desc}</div></div>)}</div>
-            <section className="panel operations-panel"><div className="panel-header"><div><h2>Response Queue</h2><span>Highest dynamic risk appears first</span></div><span className="panel-badge">{activeHazards.length} ACTIVE</span></div><div className="operations-list">{sortedActive.length === 0 ? <div className="empty-state">✓ No active response required</div> : sortedActive.map((hazard) => <div className="operation-card" key={hazard.id}><div className="operation-title"><div><strong>#{hazard.id} {typeIcon(hazard.type)} {typeLabel(hazard.type)}</strong><p>{hazard.description || "No description provided"}</p></div><span className={`risk-badge ${riskClass(getEffectiveRiskLevel(hazard))}`}>{getEffectiveRiskLevel(hazard)} · {getEffectiveRiskScore(hazard)}</span></div><div className="operation-meta"><span>📍 {Number(hazard.latitude).toFixed(4)}, {Number(hazard.longitude).toFixed(4)}</span><span>Status: <strong>{statusLabel(hazard.status)}</strong></span><span>Exposure: <strong>{hazard.exposure_label}</strong></span><span>Observations: <strong>{hazard.observation_count || 1}</strong></span>{hazard.work_order_id && <span>Work order: <strong>{hazard.work_order_id}</strong></span>}</div><div className="operation-actions"><select value={selectedTeams[hazard.id] || hazard.assigned_team || ""} onChange={(e) => setSelectedTeams({ ...selectedTeams, [hazard.id]: e.target.value })}><option value="">Select Team</option>{TEAMS.map((team) => <option key={team}>{team}</option>)}</select><button className="operation-button" onClick={() => assignTeam(hazard.id, selectedTeams[hazard.id] || hazard.assigned_team)}>Assign Team</button>{(hazard.status === "ASSIGNED" || hazard.status === "REPORTED") && <button className="operation-button primary" onClick={() => updateHazardStatus(hazard.id, "IN_PROGRESS")}>▶ Start Response</button>}{hazard.status === "IN_PROGRESS" && <><label className="proof-input">Proof<input type="file" accept="image/*" onChange={(e) => setProofFiles({ ...proofFiles, [hazard.id]: e.target.files?.[0] || null })} /></label><button className="operation-button success" disabled={proofLoading} onClick={() => updateHazardStatus(hazard.id, "RESOLVED")}>✓ {proofLoading ? "Uploading..." : "Mark Resolved"}</button></>}</div></div>)}</div></section>
+            <section className="panel operations-panel"><div className="panel-header"><div><h2>Response Queue</h2><span>Highest dynamic risk appears first</span></div><span className="panel-badge">{activeHazards.length} ACTIVE</span></div><div className="operations-list">{sortedActive.length === 0 ? <div className="empty-state">✓ No active response required</div> : sortedActive.map((hazard) => <div className="operation-card" key={hazard.id}><div className="operation-title"><div><strong>#{hazard.id} {typeIcon(hazard.type)} {typeLabel(hazard.type)}</strong><p>{hazard.description || "No description provided"}</p></div><span className={`risk-badge ${riskClass(getEffectiveRiskLevel(hazard))}`}>{getEffectiveRiskLevel(hazard)} · {getEffectiveRiskScore(hazard)}</span></div><div className="operation-meta"><span>📍 {Number(hazard.latitude).toFixed(4)}, {Number(hazard.longitude).toFixed(4)}</span><span>Status: <strong>{statusLabel(hazard.status)}</strong></span><span>Exposure: <strong>{hazard.exposure_label}</strong></span><span>Observations: <strong>{hazard.observation_count || 1}</strong></span>{hazard.work_order_id && <span>Work order: <strong>{hazard.work_order_id}</strong></span>}</div><div className="operation-actions"><select value={selectedTeams[hazard.id] || hazard.assigned_team || ""} onChange={(e) => setSelectedTeams({ ...selectedTeams, [hazard.id]: e.target.value })}><option value="">Select Team</option>{TEAMS.map((team) => <option key={team}>{team}</option>)}</select><button className="operation-button" onClick={() => assignTeam(hazard.id, selectedTeams[hazard.id] || hazard.assigned_team)}>Assign Team</button>{(hazard.status === "ASSIGNED" || hazard.status === "REPORTED") && <button className="operation-button primary" onClick={() => updateHazardStatus(hazard.id, "IN_PROGRESS")}>▶ Start Response</button>}{hazard.status === "IN_PROGRESS" && <><label className="proof-input">Field Proof<input type="file" accept="image/*" onChange={(e) => verifyProofFile(hazard.id, e.target.files?.[0] || null)} /></label>{proofResults[hazard.id] && <span className="proof-verified">✓ Proof verified {proofResults[hazard.id].verification_confidence}%</span>}<button className="operation-button success" disabled={proofLoading || !proofResults[hazard.id] || proofResults[hazard.id].status !== "PROOF_VERIFIED"} onClick={() => updateHazardStatus(hazard.id, "RESOLVED")}>✓ Mark Resolved</button></>}</div></div>)}</div></section>
             <div className="workflow-strip"><div><b>1 · Prioritize</b><span>Dynamic risk combines severity, exposure, confidence, observations and weather.</span></div><div><b>2 · Dispatch</b><span>Match the incident to a municipal response team and work order.</span></div><div><b>3 · Verify</b><span>Field evidence closes the loop and removes the hazard from active warnings.</span></div></div>
           </>
         )}
@@ -502,7 +724,7 @@ function App() {
           <>
             <div className="page-header"><div><div className="eyebrow">PUBLIC SAFETY NOTIFICATIONS</div><h1>Safety Alerts</h1><p>Location-aware warnings generated from the live hazard state</p></div><button className="refresh-button" onClick={requestNotifications}>🔔 Enable Browser Alerts</button></div>
             <section className="panel alerts-panel"><div className="panel-header"><div><h2>Active Warnings</h2><span>High and critical incidents only</span></div><span className="panel-badge">{alerts.length}</span></div><div className="alert-list">{alerts.length === 0 ? <div className="empty-state">✓ No high-risk alerts right now</div> : alerts.map((alert) => <div className="alert-card" key={alert.id}><div className={`alert-icon ${riskClass(alert.risk_level)}`}>⚠</div><div><strong>{alert.title}</strong><p>{alert.message}</p><small>Exposure: {alert.exposure} · Hazard #{alert.id}</small></div><button className="mini-button" onClick={() => setView("citizen")}>View map</button></div>)}</div></section>
-            <div className="safe-route-card"><div><b>Safer movement</b><span>For the prototype, route guidance uses hazard avoidance zones on the GIS map. A production deployment can connect OSRM/Mapbox to calculate a full alternate route.</span></div><button className="operation-button primary" onClick={() => setView("citizen")}>Open Safety Map</button></div>
+            <div className="safe-route-card"><div><b>Safer movement</b><span>OSRM calculates a drivable route, then HazardPulse scores available alternatives against active hazard proximity.</span></div><div className="route-controls"><input aria-label="Start latitude" value={routeForm.startLat} onChange={(e) => setRouteForm({ ...routeForm, startLat: e.target.value })} placeholder="Start lat" /><input aria-label="Start longitude" value={routeForm.startLng} onChange={(e) => setRouteForm({ ...routeForm, startLng: e.target.value })} placeholder="Start lng" /><input aria-label="Destination latitude" value={routeForm.endLat} onChange={(e) => setRouteForm({ ...routeForm, endLat: e.target.value })} placeholder="Destination lat" /><input aria-label="Destination longitude" value={routeForm.endLng} onChange={(e) => setRouteForm({ ...routeForm, endLng: e.target.value })} placeholder="Destination lng" /><button className="operation-button primary" onClick={calculateSaferRoute} disabled={routeLoading}>{routeLoading ? "Calculating..." : "Calculate Safer Route"}</button></div>{saferRoute && <div className="route-result">✓ {saferRoute.distance_km} km · {saferRoute.duration_min} min · {saferRoute.hazards_near_route.length ? `${saferRoute.hazards_near_route.length} hazard(s) near route` : "No active hazards near selected route"}</div>}<button className="operation-button" onClick={() => setView("citizen")}>Open Safety Map</button></div>
           </>
         )}
       </main>
